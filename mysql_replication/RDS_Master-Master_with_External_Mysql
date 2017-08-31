@@ -1,0 +1,74 @@
+Unfortunatly, AWS don't support the master-master replication on RDS.But with different approach we will do a setup of master-master replicationbetween RDS and External Mysql Instance.In our External Mysql is EC2 server with Mysql-5.16
+
+Prequisties:
+1. Mysql-5.7
+2. Port 3306 accessbile between RDS and External Mysql Server
+3. DB sync
+
+Configuration Steps:
+1. Configure External Mysql Instance(EC2) as Master.
+2. Configure RDS as a Master and then Slave.
+3. Configure External Mysql instance as Slave.
+
+Step 1:- Configure External Mysql Instance(EC2) as Master
+
+a) First we make changes in my.cnf
+
+	bind-address            = 0.0.0.0
+	server-id               = 2
+	log_bin = /var/lib/mysql/mysql-bin.log
+	replicate-wild-ignore-table = mysql.rds_%
+	auto_increment_increment = 2
+	auto_increment_offset = 2
+
+b) Restart Mysql service
+    /etc/init.d/mysql restart
+
+c) Mysql configuration has been completed,now we will create a replication user and check binlog position.
+  
+  mysql> grant replication slave on *.* to '<USER>'@'<RDS_IP>' identified by '<PASSWORD>';
+  mysql> show master status;
++----------------------------+----------+--------------+------------------+-------------------+
+| File                       | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++----------------------------+----------+--------------+------------------+-------------------+
+| mysql-bin.000001 |      697 |              |                  |                   |
++----------------------------+----------+--------------+------------------+-------------------+
+
+Step 2:- Configure RDS as a Master and then Slave
+
+Binlogs are enabled in RDS by default,we can verify the same by running the "show master status" command.Now we will set two variables in the "Parameter Groups".
+	auto_increment_increment   = 2
+	auto_increment_offset      = 1
+
+Here on RDS we will perform the same steps like replication user creation and check master records.
+
+  mysql> grant replication slave on *.* to '<USER>'@'<RDS_IP>' identified by '<PASSWORD>';
+  mysql> show master status;
++----------------------------+----------+--------------+------------------+-------------------+
+| File                       | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++----------------------------+----------+--------------+------------------+-------------------+
+| mysql-bin-changelog.000220 |      531 |              |                  |                   |
++----------------------------+----------+--------------+------------------+-------------------+
+
+Note down these information,we will use these.
+
+Login to RDS and run these commands:
+
+ 	mysql> call mysql.rds_set_external_master('MASTERIP',3306,'replicationUSER','replicationPASSWORd','mysql-bin.000001',697,0);
+
+ 	mysql> call mysql.rds_start_replication
+
+ Check slave status by running below command. If every thing is good then output would be like this
+
+	mysql -uroot -p<password> -h<RDS_EndPoint> -e "show slave status\G;" | grep Running
+		Slave_IO_Running: Yes
+		Slave_SQL_Running: Yes
+
+Step 3:- Configure External Mysql instance as Slave
+    mysql> CHANGE MASTER TO MASTER_HOST = '<rds_host_ip>', MASTER_USER = '<REPLI_USER>', MASTER_PASSWORD = '<REPLI_PASSWORD>', MASTER_LOG_FILE = 'mysql-bin-changelog.000220', MASTER_LOG_POS = 531;
+
+ Now slave activated and we can check slave replication by using below command
+ 
+	mysql -uroot -p<password>  -e "show slave status\G;" | grep Running
+		Slave_IO_Running: Yes
+		Slave_SQL_Running: Yes
